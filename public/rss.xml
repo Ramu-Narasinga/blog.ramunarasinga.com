@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?><rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom" version="2.0"><channel><title><![CDATA[Gatsby Starter Blog RSS Feed]]></title><description><![CDATA[A blog documenting interesting tech concepts.]]></description><link>https://ramunarasinga.com</link><generator>GatsbyJS</generator><lastBuildDate>Thu, 13 Jul 2023 20:48:30 GMT</lastBuildDate><item><title><![CDATA[A clean, better way to handle errors in NodeJs]]></title><description><![CDATA[When I was studying the Jira Clone Repository, I came across a few interesting design decisions and implementations. This post is a review…]]></description><link>https://ramunarasinga.com/error-handling-in-nodejs/</link><guid isPermaLink="false">https://ramunarasinga.com/error-handling-in-nodejs/</guid><pubDate>Wed, 07 Jun 2023 08:15:30 GMT</pubDate><content:encoded>&lt;p&gt;When I was studying the Jira Clone Repository, I came across a few interesting design decisions and implementations. This post is a review about the error design pattern implemented in Jira Clone Repository. I took a vow to write clean code or atleast try.&lt;/p&gt;
+&lt;p&gt;This post provides a detailed outline of error handling&lt;/p&gt;
+&lt;h2&gt;Error status code and message handler&lt;/h2&gt;
+&lt;h2&gt;Problem:&lt;/h2&gt;
+&lt;p&gt;I have encountered a few common problems that this design pattern helped me solve, especially when it had to do with sending correct status code and valid error messages.&lt;/p&gt;
+&lt;p&gt;Let me provide an instance. I was working on this project that used NodeJs that should have valid, meaningful error codes and messages. There was this one particular endpoint that had a missing status code as part of the response being sent.&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;return res.send({
+  message: ‘This is an error!’
+});&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;In the above snippet unless you explicitly set status, it defaults to 200. Well that cannot be the case when it is an error.&lt;/p&gt;
+&lt;p&gt;Deployed to production and after a few hours, realized that the status code was responding with 200 even when there was an error. These status codes were really important in this project because I relied on those status codes to perform further DB operations. After some investigation, I found that it had missing status code being set like the following&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;return res.send({
+  message: ‘This is an error!’
+});&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;h2&gt;Solution:&lt;/h2&gt;
+&lt;h3&gt;CustomError class&lt;/h3&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;/* eslint-disable max-classes-per-file */
+
+type ErrorData = { [key: string]: any };
+
+export class CustomError extends Error {
+  constructor(
+    public message: string,
+    public code: string | number = &quot;INTERNAL_ERROR&quot;,
+    public status: number = 500,
+    public data: ErrorData = {}
+  ) {
+    super();
+  }
+}
+
+export class RouteNotFoundError extends CustomError {
+  constructor(originalUrl: string) {
+    super(`Route &apos;${originalUrl}&apos; does not exist.`, &quot;ROUTE_NOT_FOUND&quot;, 404);
+  }
+}
+
+export class EntityNotFoundError extends CustomError {
+  constructor(entityName: string) {
+    super(`${entityName} not found.`, &quot;ENTITY_NOT_FOUND&quot;, 404);
+  }
+}
+
+export class BadUserInputError extends CustomError {
+  constructor(errorData: ErrorData) {
+    super(&quot;There were validation errors.&quot;, &quot;BAD_USER_INPUT&quot;, 400, errorData);
+  }
+}
+
+export class InvalidTokenError extends CustomError {
+  constructor(message = &quot;Authentication token is invalid.&quot;) {
+    super(message, &quot;INVALID_TOKEN&quot;, 401);
+  }
+}&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Here the CustomError class is extended by specific errors such as RouteNotFoundError, EntityNotFoundError, BadUserInputError, InvalidTokenError.&lt;/p&gt;
+&lt;p&gt;If it helps, you can create a file for each class, for example, you can put BadUserInputError into src/errors/customErrors/badUserInputError to follow the &lt;a href=&quot;https://en.wikipedia.org/wiki/Single-responsibility_principle&quot;&gt;Single Responsibility Principle&lt;/a&gt;. Though this decision/choice is completely up to the dev.&lt;/p&gt;
+&lt;h3&gt;CatchErrors wrapper&lt;/h3&gt;
+&lt;p&gt;Create a catchErrors wrapper in src/errors/asyncCatch.ts with the following code&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;import { RequestHandler } from &quot;express&quot;;
+
+export const catchErrors = (requestHandler: RequestHandler): RequestHandler =&gt; {
+  return async (req, res, next): Promise&amp;lt;any&gt; =&gt; {
+    try {
+      return await requestHandler(req, res, next);
+    } catch (error) {
+      next(error);
+    }
+  };
+};&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;The following is a usage example in a controller function:&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;export const getProjectWithUsersAndIssues = catchErrors(async (req, res) =&gt; {
+  const project = await findEntityOrThrow(Project, req.currentUser.projectId, {
+    relations: [&apos;users&apos;, &apos;issues&apos;],
+  });
+  res.respond({
+    project: {
+      ...project,
+      issues: project.issues.map(issuePartial),
+    },
+  });
+});&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Notice the function named *findEntityorThrow. *It is self explanatory, it either fetches or throws errors. And when the error is thrown, it is caught and passed to chain of middleware through next(error)&lt;/p&gt;
+&lt;p&gt;And this error is caught at src/index.ts as shown below&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;const initializeExpress = (): void =&gt; {
+  const app = express();
+
+  app.use(cors());
+  app.use(express.json());
+  app.use(express.urlencoded());
+
+  app.use(addRespondToResponse);
+
+  attachPublicRoutes(app);
+
+  app.use(&apos;/&apos;, authenticateUser);
+
+  attachPrivateRoutes(app);
+
+  app.use((req, _res, next) =&gt; next(new RouteNotFoundError(req.originalUrl)));
+  app.use(handleError);
+
+  app.listen(process.env.PORT || 3000);
+};
+
+const initializeApp = async (): Promise&amp;lt;void&gt; =&gt; {
+  await establishDatabaseConnection();
+  initializeExpress();
+};
+
+
+initializeApp();&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;To be precise, the next in the chain of middleware is handled by &lt;em&gt;app.use(handleError)&lt;/em&gt;&lt;/p&gt;
+&lt;h3&gt;handleError&lt;/h3&gt;
+&lt;p&gt;The following snippet shows the handleError function&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;import { ErrorRequestHandler } from &quot;express&quot;;
+import { pick } from &quot;lodash&quot;;
+
+import { CustomError } from &quot;errors&quot;;
+
+export const handleError: ErrorRequestHandler = (error, _req, res, _next) =&gt; {
+  console.error(error);
+
+  const isErrorSafeForClient = error instanceof CustomError;
+
+  const clientError = isErrorSafeForClient
+    ? pick(error, [&quot;message&quot;, &quot;code&quot;, &quot;status&quot;, &quot;data&quot;])
+    : {
+        message: &quot;Something went wrong, please contact our support.&quot;,
+        code: &quot;INTERNAL_ERROR&quot;,
+        status: 500,
+        data: {},
+      };
+
+  res.status(clientError.status).send({ error: clientError });
+};&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;isErrorSafeForClient checks if an error is an instance of CustomError. If it is an instance of CustomError, we use a function named &lt;a href=&quot;https://lodash.com/docs/#pick&quot;&gt;*pick&lt;/a&gt; *from lodash.&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;pick(error, [‘message’, ‘code’, ‘status’, ‘data’])&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;The above line always ensures that message, code, status, data are available and each response is consistent with this information that can be used by the client safely and reliably.&lt;/p&gt;
+&lt;h3&gt;Example one:&lt;/h3&gt;
+&lt;p&gt;Let’s pick BadUserInputError. We can throw the following anywhere in our codebase where it is relevant&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;throw new BadUserInputError({ fields: errorFields });&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;BadUserInputError class:&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;export class BadUserInputError extends CustomError {
+  constructor(errorData: ErrorData) {
+    super(&quot;There were validation errors.&quot;, &quot;BAD_USER_INPUT&quot;, 400, errorData);
+  }
+}&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;CustomError class:&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;export class CustomError extends Error {
+  constructor(
+  public message: string,
+  public code: string | number = &apos;INTERNAL_ERROR&apos;,
+  public status: number = 500,
+  public data: ErrorData = {},
+  ) {
+  super();
+}&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Here clientError object is as follows:&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;{
+ “message”: “There were validation errors.”,
+ “code”: “BAD_USER_INPUT”,
+ “status”: 400,
+ “data”:  {“fields”: &amp;lt;errors&gt;}
+}&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;h3&gt;Example two:&lt;/h3&gt;
+&lt;p&gt;Let’s pick InvalidTokenError. We can throw this error when we encounter invalid token error.&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;export const authenticateUser = catchErrors(async (req, _res, next) =&gt; {
+  const token = getAuthTokenFromRequest(req);
+  if (!token) {
+    throw new InvalidTokenError(&quot;Authentication token not found.&quot;);
+  }
+  const userId = verifyToken(token).sub;
+  if (!userId) {
+    throw new InvalidTokenError(&quot;Authentication token is invalid.&quot;);
+  }
+  const user = await User.findOne(userId);
+  if (!user) {
+    throw new InvalidTokenError(
+      &quot;Authentication token is invalid: User not found.&quot;
+    );
+  }
+  req.currentUser = user;
+  next();
+});&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;InvalidTokenError class:&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;export class InvalidTokenError extends CustomError {
+  constructor(message = &quot;Authentication token is invalid.&quot;) {
+    super(message, &quot;INVALID_TOKEN&quot;, 401);
+  }
+}&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;p&gt;Here clientError object is as follows:&lt;/p&gt;
+&lt;div class=&quot;gatsby-highlight&quot; data-language=&quot;text&quot;&gt;&lt;pre class=&quot;language-text&quot;&gt;&lt;code class=&quot;language-text&quot;&gt;{
+  “message”: “Authentication token is invalid.”,
+  “code”: “INVALID_TOKEN”,
+  “status”: 400,
+  “data”: { }
+}&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;
+&lt;h3&gt;&lt;strong&gt;Conclusion:&lt;/strong&gt;&lt;/h3&gt;
+&lt;p&gt;I have personally experienced some production issues because of inconsistency in the way errors were handled in a NodeJs based backend project. There could be other ways to handle errors better than this way, I liked this one. Hope you enjoyed reading this post.&lt;/p&gt;</content:encoded></item></channel></rss>
